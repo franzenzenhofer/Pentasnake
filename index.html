@@ -1,0 +1,1135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pentasnake - A Trippy Snake Game on a Pentagon Grid</title>
+
+  <!-- Primary Meta Tags -->
+  <meta name="title" content="Pentasnake - A Trippy Snake Game on a Pentagon Grid">
+  <meta name="description" content="Play Pentasnake, a unique twist on the classic Snake game set on a pentagon grid. Navigate through psychedelic patterns while collecting apples in this mesmerizing browser game.">
+  <meta name="keywords" content="pentasnake, snake game, pentagon grid, browser game, HTML5 game, geometric game, psychedelic game">
+  <meta name="author" content="Franz Enzenhofer">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://pentasnake.franzai.com/">
+  <meta property="og:title" content="Pentasnake - A Trippy Snake Game on a Pentagon Grid">
+  <meta property="og:description" content="Play Pentasnake, a unique twist on the classic Snake game set on a pentagon grid. Navigate through psychedelic patterns while collecting apples in this mesmerizing browser game.">
+
+
+  <!-- Technical Meta Tags -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#000000">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+
+  <!-- Canonical URL -->
+  <link rel="canonical" href="https://pentasnake.franzai.com/"> 
+
+  <!-- 
+    Added Hammer.js (a popular touch gesture library) via CDN for swipe detection.
+    This will enable our snake to also respond to swipe directions on touch devices.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden; /* Disable scrolling */
+    }
+    body {
+      margin: 0; 
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+    }
+
+    .container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #111;
+      cursor: crosshair;
+      touch-action: none; /* Important to allow gestures on mobile/touch devices */
+    }
+
+    .controls {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 5px;
+      display: none; /* Hide by default */
+      grid-template-columns: auto 150px 60px;
+      gap: 10px;
+      align-items: center;
+      z-index: 1000;
+    }
+    
+    .controls label {
+      color: #fff;
+      font-size: 12px;
+      text-align: right;
+    }
+    
+    .controls input[type="range"] {
+      width: 150px;
+    }
+    
+    .controls input[type="number"] {
+      width: 60px;
+      background: #333;
+      color: #fff;
+      border: 1px solid #555;
+      padding: 3px;
+      border-radius: 3px;
+    }
+
+    .controls button {
+      grid-column: 1 / -1;
+      margin-top: 8px;
+      padding: 4px 8px;
+      cursor: pointer;
+      background: #333;
+      color: #fff;
+      border: 1px solid #555;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <!-- We only keep a single container for the controls;
+       We'll dynamically generate the labels/inputs in JS. -->
+  <div class="controls" id="controlsContainer"></div>
+
+  <div class="container">
+    <canvas id="pentagramCanvas"></canvas>
+  </div>
+
+  <script>
+    /**
+     * Main object handling all pentagon geometry, animations, snake game logic, 
+     * and user interactions.
+     */
+    const PentagonGridClockwise = {
+      // Add snake game state
+      snake: {
+        active: false,
+        body: [],
+        currentTriangle: null,
+        length: 5,          // Reduced initial length for better visibility
+        speed: 200,         // Faster initial speed
+        hue: 120,           // Start with green hue
+        directionHint: null, // Stores the user's preferred movement direction
+        lastValidDirection: null,
+        moving: false,      // New flag to control movement
+        stuckCounter: 0     // Add this new property
+      },
+
+      // Add apple state
+      apple: {
+        triangle: null,      // Which triangle the apple occupies
+        hue: 0,              // Color hue for apple
+        time: 0,             // Used for subtle apple animation effect
+        lastSector: null     // Add this to track the last sector
+      },
+
+      // Modified core config
+      ANIMATION_SPEED: 300,
+      angleOffset: 270,
+      segmentAngle: 0,
+      SECTOR_COUNT: 5,
+      DEPTH_LEVELS: 3,
+      VIRTUAL_RADIUS: 1.34,
+      CANVAS_SCALE: 300,
+
+      // LSD animation state (for the "trippy" color cycling effect)
+      lsdTime: 0,
+      paintTTLMap: {},
+      paintTTLDefault: 20,
+
+      // Canvas state
+      canvas: null,
+      ctx: null,
+      triangles: [],
+      shapeOffset: { x: 0, y: 0 },
+      autoScaleFactor: 1,
+
+      // For building edge-based neighbors
+      edgeMap: {},
+
+      /**
+       * Main initialization function called once DOM is loaded.
+       */
+      init() {
+        // Setup canvas and game elements first
+        this.canvas = document.getElementById('pentagramCanvas');
+        this.setupCanvas();
+        this.ctx = this.canvas.getContext('2d');
+        
+        this.triangles = [];
+        this.paintTTLMap = {};
+        this.virtualVertices = this.createClockwiseVertices();
+        this.virtualCenter = { x: 0, y: 0 };
+
+        this.triangles = this.generateAllTriangles();
+        this.centerAndScaleAllTriangles();
+        this.storeCanvasPoints();
+        this.buildAlgorithmicNeighbors();
+
+        // Setup controls before starting animations and game
+        this.setupControls();
+
+        // Then start animations and game elements
+        this.startLSDAnimation();
+        this.setupInteraction();
+        this.setupKeyboardControls();
+        this.setupTouchControls();
+        this.startSnake();
+        this.spawnApple();
+
+        // Window resize handler
+        window.addEventListener('resize', () => {
+          this.setupCanvas();
+          this.centerAndScaleAllTriangles();
+          this.storeCanvasPoints();
+          this.buildAlgorithmicNeighbors();
+        });
+      },
+
+      /**
+       * Dynamically generate the control elements and wire up their events.
+       * Also sets the desired default values.
+       */
+      setupControls() {
+        // Here is our configuration of all controls (with desired defaults):
+        const controlConfig = [
+          { label: 'Distance:',             param: 'mirrorDistance',           min: 0,   max: 2,   step: 0.01, defaultValue: 1.64 },
+          { label: 'Scale:',               param: 'mirrorScale',              min: 0.1, max: 2,   step: 0.01, defaultValue: 1 },
+          { label: 'Rotation Increment:',  param: 'mirrorRotationIncrement',   min: 0,   max: 180, step: 1,    defaultValue: 0 },
+          { label: 'Rotation Offset #0:',  param: 'mirrorRotation0',          min: 0,   max: 360, step: 1,    defaultValue: 18 },
+          { label: 'Rotation Offset #1:',  param: 'mirrorRotation1',          min: 0,   max: 360, step: 1,    defaultValue: 306 },
+          { label: 'Rotation Offset #2:',  param: 'mirrorRotation2',          min: 0,   max: 360, step: 1,    defaultValue: 234 },
+          { label: 'Rotation Offset #3:',  param: 'mirrorRotation3',          min: 0,   max: 360, step: 1,    defaultValue: 162 },
+          { label: 'Rotation Offset #4:',  param: 'mirrorRotation4',          min: 0,   max: 360, step: 1,    defaultValue: 90 }
+        ];
+
+        const controlsContainer = document.getElementById('controlsContainer');
+
+        // Single function to handle both slider and number input changes
+        const handleControlChange = (cfg, value) => {
+          const slider = document.getElementById(cfg.param);
+          const number = document.getElementById(cfg.param + 'Value');
+          
+          if (slider && number) {
+            const val = parseFloat(value);
+            if (!isNaN(val)) {
+              const clamped = Math.min(Math.max(val, cfg.min), cfg.max);
+              slider.value = clamped;
+              number.value = clamped;
+              this.drawAllTrianglesLSD();
+            }
+          }
+        };
+
+        // Dynamically create each label + slider + number input
+        controlConfig.forEach(cfg => {
+          // Label
+          const labelEl = document.createElement('label');
+          labelEl.textContent = cfg.label;
+          controlsContainer.appendChild(labelEl);
+
+          // Range input
+          const rangeEl = document.createElement('input');
+          rangeEl.type = 'range';
+          rangeEl.id = cfg.param;
+          rangeEl.min = cfg.min;
+          rangeEl.max = cfg.max;
+          rangeEl.step = cfg.step;
+          rangeEl.value = cfg.defaultValue;
+          controlsContainer.appendChild(rangeEl);
+
+          // Number input
+          const numberEl = document.createElement('input');
+          numberEl.type = 'number';
+          numberEl.id = cfg.param + 'Value';
+          numberEl.min = cfg.min;
+          numberEl.max = cfg.max;
+          numberEl.step = cfg.step;
+          numberEl.value = cfg.defaultValue;
+          controlsContainer.appendChild(numberEl);
+
+          // Wire up events
+          rangeEl.addEventListener('input', e => handleControlChange(cfg, e.target.value));
+          numberEl.addEventListener('input', e => handleControlChange(cfg, e.target.value));
+        });
+
+        // Finally, create the Export Settings button
+        const exportBtn = document.createElement('button');
+        exportBtn.id = 'exportButton';
+        exportBtn.textContent = 'Export Settings';
+        controlsContainer.appendChild(exportBtn);
+
+        // Setup export button functionality
+        exportBtn.addEventListener('click', () => {
+          const settings = controlConfig.reduce((acc, cfg) => {
+            const slider = document.getElementById(cfg.param);
+            if (slider) {
+              acc[cfg.param] = parseFloat(slider.value);
+            }
+            return acc;
+          }, {});
+          
+          const blob = new Blob([JSON.stringify(settings, null, 2)], {type: 'application/json'});
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'pentagram-settings.json';
+          link.click();
+          URL.revokeObjectURL(url);
+        });
+      },
+
+      /**
+       * Set the canvas size and internal offset/scaling used to draw the pentagon grid.
+       */
+      setupCanvas() {
+              // Get the actual displayed size of the canvas
+              const rect = this.canvas.getBoundingClientRect();
+              
+              // Set the canvas dimensions to match its CSS size
+              this.canvas.width = rect.width;
+              this.canvas.height = rect.height;
+              
+              // Update scaling and offset based on the actual canvas size
+              if (rect.width > rect.height) {
+                  // For landscape mode, base scale on height to ensure full pentagram visibility
+                  this.CANVAS_SCALE = rect.height / 3;
+              } else {
+                  // For portrait mode, keep existing behavior
+                  this.CANVAS_SCALE = rect.width / 3;
+              }
+              
+              this.CANVAS_OFFSET_X = rect.width / 2;
+              this.CANVAS_OFFSET_Y = rect.height / 2;
+            },
+
+      /**
+       * Generate the outer pentagon vertices in a clockwise direction.
+       * These define the shape around which we subdivide into triangles.
+       */
+      createClockwiseVertices() {
+        const verts = [];
+        for (let i = 0; i < this.SECTOR_COUNT; i++) {
+          // Additional angle segment offset
+          const segA = (this.segmentAngle * i * Math.PI / 180);
+          // Convert from polar to cartesian
+          const angle = (2 * Math.PI * i / this.SECTOR_COUNT)
+            - (this.angleOffset * Math.PI / 180)
+            + segA;
+          const vx = this.VIRTUAL_RADIUS * Math.cos(angle);
+          const vy = this.VIRTUAL_RADIUS * Math.sin(angle);
+          verts.push({ x: vx, y: vy });
+        }
+        return verts;
+      },
+
+      /**
+       * Build an array of triangles by subdividing each sector (from the outer pentagon
+       * vertex pair plus the center).
+       */
+      generateAllTriangles() {
+        const allTriangles = [];
+        for (let i = 0; i < this.SECTOR_COUNT; i++) {
+          const v1 = this.virtualVertices[i];
+          const v2 = this.virtualVertices[(i + 1) % this.SECTOR_COUNT];
+          // Subdivide into smaller triangles
+          const subTriangles = this.subdivideTri(v1, v2, this.virtualCenter, i, 0);
+          allTriangles.push(...subTriangles);
+        }
+        return allTriangles;
+      },
+
+      /**
+       * Recursively subdivide a single large triangle into smaller ones.
+       * Depth-limited by this.DEPTH_LEVELS.
+       */
+      subdivideTri(a, b, c, sectorIndex, depth) {
+        if (depth === this.DEPTH_LEVELS) {
+          return [{
+            points: [a, b, c],
+            coords: { x: sectorIndex, y: depth, z: 0 },
+          }];
+        }
+        // Midpoints of each edge
+        const mAB = this.midpoint(a, b),
+              mBC = this.midpoint(b, c),
+              mCA = this.midpoint(c, a);
+
+        // Recursively subdivide each smaller triangle
+        const set1 = this.subdivideTri(a,   mAB, mCA, sectorIndex, depth + 1);
+        const set2 = this.subdivideTri(mAB, b,   mBC, sectorIndex, depth + 1);
+        const set3 = this.subdivideTri(mCA, mBC, c,   sectorIndex, depth + 1);
+        const set4 = this.subdivideTri(mAB, mBC, mCA, sectorIndex, depth + 1);
+
+        const combined = [...set1, ...set2, ...set3, ...set4];
+        combined.forEach((tri, idx) => {
+          tri.coords.z = idx;
+        });
+        return combined;
+      },
+
+      /**
+       * Utility function to find midpoint of two points.
+       */
+      midpoint(p, q) {
+        return { x: 0.5 * (p.x + q.x), y: 0.5 * (p.y + q.y) };
+      },
+
+      /**
+       * Utility function to find centroid of a polygon (used here for bounding box or picking direction).
+       */
+      centroid(pts) {
+        let sx = 0, sy = 0;
+        for (const p of pts) { sx += p.x; sy += p.y; }
+        return { x: sx / pts.length, y: sy / pts.length };
+      },
+
+      /**
+       * Shifts and scales all triangle points so they are centered in the canvas properly.
+       */
+      centerAndScaleAllTriangles() {
+        // We look at the outer ring (z === 0) to find the main shape center
+        const ring0 = this.triangles.filter(t => t.coords.z === 0);
+        if (!ring0.length) return;
+
+        // Find average centroid among that ring
+        let sx = 0, sy = 0;
+        for (const tri of ring0) {
+          const c = this.centroid(tri.points);
+          sx += c.x;
+          sy += c.y;
+        }
+        const centerZ0 = { x: sx / ring0.length, y: sy / ring0.length };
+
+        // Shift entire shape so ring0 is centered at virtual (0,0)
+        this.shiftAllPoints(-centerZ0.x, -centerZ0.y);
+
+        // Determine bounding box
+        const b = this.findBounds();
+        const shapeW = b.maxX - b.minX, shapeH = b.maxY - b.minY;
+        const canW = this.canvas.width, 
+              canH = this.canvas.height;
+        const scaleNeeded = Math.min(
+          (canW - 2) / shapeW, 
+          (canH - 2) / shapeH
+        );
+
+        // Only scale if we must shrink to fit
+        if (scaleNeeded < 1) {
+          this.autoScaleFactor = this.CANVAS_SCALE * scaleNeeded;
+        } else {
+          this.autoScaleFactor = this.CANVAS_SCALE;
+        }
+
+        // After scaling, figure out how to center the shape in the final canvas
+        const sminX = b.minX * this.autoScaleFactor,
+              smaxX = b.maxX * this.autoScaleFactor;
+        const sminY = b.minY * this.autoScaleFactor,
+              smaxY = b.maxY * this.autoScaleFactor;
+        const shapeCx = (sminX + smaxX) / 2,
+              shapeCy = (sminY + smaxY) / 2;
+
+        this.shapeOffset.x = this.CANVAS_OFFSET_X - shapeCx;
+        this.shapeOffset.y = this.CANVAS_OFFSET_Y - shapeCy;
+      },
+
+      /**
+       * Shift all triangle vertices by a fixed amount (used during centering).
+       */
+      shiftAllPoints(dx, dy) {
+        for (const tri of this.triangles) {
+          for (const p of tri.points) {
+            p.x += dx;
+            p.y += dy;
+          }
+        }
+      },
+
+      /**
+       * Find min and max x/y among all triangle vertices. Used for bounding box calculations.
+       */
+      findBounds() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const tri of this.triangles) {
+          for (const p of tri.points) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+        }
+        return { minX, maxX, minY, maxY };
+      },
+
+      /**
+       * Pre-calculate each triangle's canvas coordinates so that drawing can be faster.
+       */
+      storeCanvasPoints() {
+        for (let i = 0; i < this.triangles.length; i++) {
+          const tri = this.triangles[i];
+          tri.id = i;
+          tri.canvasPoints = tri.points.map(p => this.virtualToCanvas(p));
+        }
+      },
+
+      /**
+       * Convert a point in "virtual" coordinates to actual canvas coords.
+       */
+      virtualToCanvas(p) {
+        const sx = p.x * this.autoScaleFactor;
+        const sy = p.y * this.autoScaleFactor;
+        return {
+          x: this.shapeOffset.x + sx,
+          y: this.shapeOffset.y - sy // note we invert y for canvas
+        };
+      },
+
+      /**
+       * Build adjacency for each triangle by grouping edges. 
+       * Each triangle will have an `edgeNeighbors` array.
+       */
+      buildAlgorithmicNeighbors() {
+        // Reset edge map
+        this.edgeMap = {};
+        for (const tri of this.triangles) {
+          tri.edgeNeighbors = []; // adjacency array
+        }
+        // Build edgeMap: each edgeKey => [triangleIDs...]
+        for (const tri of this.triangles) {
+          const pts = tri.points;
+          for (let i = 0; i < 3; i++) {
+            const j = (i + 1) % 3;
+            const edgeKey = this.makeEdgeKey(pts[i], pts[j]);
+            if (!this.edgeMap[edgeKey]) {
+              this.edgeMap[edgeKey] = [];
+            }
+            this.edgeMap[edgeKey].push(tri.id);
+          }
+        }
+        // Link neighbors for any edge that belongs to multiple triangles
+        for (const edgeKey in this.edgeMap) {
+          const triIDs = this.edgeMap[edgeKey];
+          if (triIDs.length < 2) continue;
+          // all triangles in triIDs share the same edge
+          for (let i = 0; i < triIDs.length; i++) {
+            const t1 = this.triangles[triIDs[i]];
+            for (let j = i + 1; j < triIDs.length; j++) {
+              const t2 = this.triangles[triIDs[j]];
+              if (!t1.edgeNeighbors.includes(t2)) {
+                t1.edgeNeighbors.push(t2);
+              }
+              if (!t2.edgeNeighbors.includes(t1)) {
+                t2.edgeNeighbors.push(t1);
+              }
+            }
+          }
+        }
+      },
+
+      /**
+       * Creates a consistent string key for an edge between p1 and p2.
+       * Sorts them so the edge (p1->p2) is the same as (p2->p1).
+       */
+      makeEdgeKey(p1, p2) {
+        // We store about 5 decimal places for consistent matching
+        const s1 = `${p1.x.toFixed(5)},${p1.y.toFixed(5)}`;
+        const s2 = `${p2.x.toFixed(5)},${p2.y.toFixed(5)}`;
+        return (s1 < s2) ? s1 + '|' + s2 : s2 + '|' + s1;
+      },
+
+      /**
+       * Start the perpetual animation loop that handles the "LSD" color cycling effect.
+       */
+      startLSDAnimation() {
+        // If an animation is already running, cancel it first
+        if (this._lsdFrameRequest) {
+          cancelAnimationFrame(this._lsdFrameRequest);
+        }
+        const animate = () => {
+          // Increase lsdTime for color swirl
+          this.lsdTime += 0.02; // small increments for a slower swirl
+
+          // Update paint TTL (Time To Live) for each triangle's paint effect
+          for (const tid in this.paintTTLMap) {
+            this.paintTTLMap[tid]--;
+            if (this.paintTTLMap[tid] <= 0) {
+              delete this.paintTTLMap[tid];
+            }
+          }
+
+          // Redraw everything
+          this.drawAllTrianglesLSD();
+          // Continue the animation loop
+          this._lsdFrameRequest = requestAnimationFrame(animate);
+        };
+        // Begin animation
+        this._lsdFrameRequest = requestAnimationFrame(animate);
+      },
+
+      /**
+       * Loop through all triangles and draw them with the "LSD" style color fill.
+       */
+      drawAllTrianglesLSD() {
+        // Clear the canvas before drawing
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        // Draw main pentagram
+        this.drawPentagramAtPosition(0, 0, 0);
+        
+        // Read current control values
+        const distance = parseFloat(document.getElementById('mirrorDistance').value);
+        const scale = parseFloat(document.getElementById('mirrorScale').value);
+        const rotationIncrement = parseFloat(document.getElementById('mirrorRotationIncrement').value);
+        
+        // Calculate mirror distance
+        const mirrorDistance = this.VIRTUAL_RADIUS * this.autoScaleFactor * distance;
+        
+        for (let i = 0; i < this.SECTOR_COUNT; i++) {
+          const angle = (2 * Math.PI * i / this.SECTOR_COUNT) - (this.angleOffset * Math.PI / 180);
+          const x = Math.cos(angle) * mirrorDistance;
+          const y = Math.sin(angle) * mirrorDistance;
+          
+          // Read each pentagram's dedicated rotation
+          const customOffset = parseFloat(document.getElementById(`mirrorRotation${i}`).value);
+          const rotationOffset = angle + ((customOffset + i * rotationIncrement) * Math.PI / 180);
+          
+          this.drawPentagramAtPosition(x, y, rotationOffset, scale);
+        }
+      },
+
+      drawPentagramAtPosition(offsetX, offsetY, rotation, scale = 1) {
+        this.ctx.save();
+        
+        this.ctx.translate(
+          this.CANVAS_OFFSET_X + offsetX,
+          this.CANVAS_OFFSET_Y + offsetY
+        );
+        
+        if (rotation) {
+          this.ctx.rotate(rotation);
+        }
+        
+        if (scale !== 1) {
+          this.ctx.scale(scale, scale);
+        }
+        
+        for (const tri of this.triangles) {
+          this.drawTriangleLSD(tri, true);
+        }
+        
+        this.ctx.restore();
+      },
+
+      drawTriangleLSD(tri, useTransform = false) {
+        let pts = tri.canvasPoints;
+        if (useTransform) {
+          // Use original points when drawing mirrored versions
+          pts = tri.points.map(p => ({
+            x: p.x * this.autoScaleFactor,
+            y: -p.y * this.autoScaleFactor // Note the negative y for canvas
+          }));
+        }
+        
+        this._pathTriangle(pts);
+
+        let finalHue, saturation, lightness;
+
+        // If this triangle is the apple
+        if (tri === this.apple.triangle) {
+          // Apple color changes slightly with time
+          this.apple.time += 0.01;
+          const appleHue = (this.apple.hue + Math.sin(this.apple.time) * 20) % 360;
+          finalHue = appleHue;
+          saturation = 85 + Math.sin(this.apple.time * 2) * 10;
+          lightness = 50 + Math.sin(this.apple.time * 3) * 5;
+
+        // If this triangle is part of the snake body
+        } else if (this.snake.active && this.snake.body.includes(tri)) {
+          const index = this.snake.body.indexOf(tri);
+          finalHue = (this.snake.hue + index * 5) % 360;
+          saturation = 90;
+          lightness = 60;
+
+        // Otherwise, it's a background triangle
+        } else {
+          // Subtle golden ratio-based offsets for color diversity
+          const PHI = 1.618033988749895;
+          const coordOffset = (
+            (tri.coords.x * PHI * 3) + 
+            (tri.coords.y * PHI * 2) + 
+            (tri.coords.z * PHI)
+          ) % 15; 
+
+          // Slower swirl effect
+          const goldenAngle = 137.5;
+          const swirlOffset = (this.lsdTime * goldenAngle * 0.5) % 360; 
+          const baseHue = (tri.coords.x * (360 / this.SECTOR_COUNT));
+          const ringFactor = (tri.coords.y * 8); 
+
+          finalHue = (baseHue + swirlOffset + ringFactor + coordOffset) % 360;
+
+          // Check if this triangle was "painted" by mouse/touch pointer
+          const isPainted = (this.paintTTLMap[tri.id] !== undefined);
+          const paintBoost = isPainted ? 15 : 0; 
+          saturation = 75 + paintBoost; 
+          lightness = 45; 
+          
+          // If recently painted, give a small highlight
+          if (isPainted) {
+            lightness = 55 + Math.random() * 10; 
+          }
+        }
+
+        this.ctx.fillStyle = `hsl(${finalHue},${saturation}%,${lightness}%)`;
+        this.ctx.fill();
+
+        this.ctx.strokeStyle = '#000';
+        this.ctx.lineWidth = 0.8;
+        this.ctx.stroke();
+      },
+
+      /**
+       * Helper function to begin a new path and form the triangular shape.
+       */
+      _pathTriangle(pts) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[0].x, pts[0].y);
+        this.ctx.lineTo(pts[1].x, pts[1].y);
+        this.ctx.lineTo(pts[2].x, pts[2].y);
+        this.ctx.closePath();
+      },
+
+      /**
+       * Sets up general interaction such as pointer painting of triangles (via hover or touch).
+       */
+      setupInteraction() {
+        const handlePointer = (x, y) => {
+          // Loop from top to bottom so we paint the triangle that is visually on top
+          for (let i = this.triangles.length - 1; i >= 0; i--) {
+            if (this.pointInPoly(x, y, this.triangles[i].canvasPoints)) {
+              // Mark that triangle as painted
+              this.paintTTLMap[this.triangles[i].id] = this.paintTTLDefault;
+              break;
+            }
+          }
+        };
+
+        // Mouse move painting
+        this.canvas.addEventListener('mousemove', (evt) => {
+          const rect = this.canvas.getBoundingClientRect();
+          handlePointer(
+            evt.clientX - rect.left,
+            evt.clientY - rect.top
+          );
+        });
+
+        // Touch move painting (mobile)
+        this.canvas.addEventListener('touchmove', (evt) => {
+          evt.preventDefault(); // prevent scrolling on touch
+          const rect = this.canvas.getBoundingClientRect();
+          const touch = evt.touches[0];
+          handlePointer(
+            touch.clientX - rect.left,
+            touch.clientY - rect.top
+          );
+        }, { passive: false });
+      },
+
+      /**
+       * Standard "point in polygon" (or triangle, in this case) test using ray casting.
+       */
+      pointInPoly(px, py, poly) {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          const intersect = ((yi > py) !== (yj > py)) &&
+            (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      },
+
+      /**
+       * Places the apple on a random triangle not currently occupied by the snake.
+       */
+      spawnApple() {
+        // Get the available triangles (not occupied by snake)
+        const availableTriangles = this.triangles.filter(t => 
+          !this.snake.body.includes(t)
+        );
+        
+        if (availableTriangles.length) {
+          // Group available triangles by sector
+          const sectorGroups = {};
+          for (const tri of availableTriangles) {
+            const sector = tri.coords.x;
+            if (!sectorGroups[sector]) {
+              sectorGroups[sector] = [];
+            }
+            sectorGroups[sector].push(tri);
+          }
+          
+          // Remove the last sector from options
+          if (this.apple.lastSector !== null) {
+            delete sectorGroups[this.apple.lastSector];
+          }
+          
+          // Get available sectors
+          const availableSectors = Object.keys(sectorGroups);
+          
+          if (availableSectors.length > 0) {
+            // Pick random sector
+            const chosenSector = availableSectors[
+              Math.floor(Math.random() * availableSectors.length)
+            ];
+            
+            // Pick random triangle from that sector
+            const sectorTriangles = sectorGroups[chosenSector];
+            this.apple.triangle = sectorTriangles[
+              Math.floor(Math.random() * sectorTriangles.length)
+            ];
+            
+            // Store the sector for next spawn
+            this.apple.lastSector = Number(chosenSector);
+            
+            // Set other apple properties
+            this.apple.hue = Math.random() * 360;
+            this.apple.time = 0;
+          } else {
+            // If no other sectors available, fall back to any available triangle
+            this.apple.triangle = availableTriangles[
+              Math.floor(Math.random() * availableTriangles.length)
+            ];
+            this.apple.lastSector = this.apple.triangle.coords.x;
+            this.apple.hue = Math.random() * 360;
+            this.apple.time = 0;
+          }
+        }
+      },
+
+      /**
+       * Begins the snake game loop if not already running.
+       * Places the snake head in a random outer triangle.
+       */
+      startSnake() {
+        // Reset snake state
+        this.snake.active = true;
+        this.snake.body = [];
+        this.snake.length = 5;
+        this.snake.speed = 350;      // Faster initial speed
+        this.snake.hue = 120;
+        this.snake.directionHint = null;
+        this.snake.lastValidDirection = null;
+        this.snake.stuckCounter = 0;
+        
+        // Start at a random outer triangle
+        const outerTris = this.triangles.filter(t => t.coords.y === this.DEPTH_LEVELS);
+        this.snake.currentTriangle = outerTris[Math.floor(Math.random() * outerTris.length)];
+        
+        // Initialize snake body
+        this.snake.body = [this.snake.currentTriangle];
+        for (let i = 1; i < this.snake.length; i++) {
+          const lastTri = this.snake.body[i - 1];
+          const nextTri = this.selectRandomNeighbor(lastTri);
+          if (nextTri) {
+            this.snake.body.push(nextTri);
+          }
+        }
+
+        // Add random initial direction
+        const directions = ['up', 'down', 'left', 'right'];
+        this.snake.directionHint = directions[Math.floor(Math.random() * directions.length)];
+
+        // Start movement
+        this.moveSnake();
+        
+        // Spawn initial apple
+        this.spawnApple();
+      },
+
+      /**
+       * The main snake movement loop (recursive via setTimeout).
+       * Picks the next triangle based on user direction, apple seeking, random, etc.
+       */
+      moveSnake() {
+        if (!this.snake.active) return;
+
+        const current = this.snake.currentTriangle;
+        let next = null;
+
+        // Try to get next move
+        next = this.pickNextTriangle(current);
+        
+        if (next) {
+          // Reset stuck counter on successful move
+          this.snake.stuckCounter = 0;
+          
+          // Move head
+          this.snake.currentTriangle = next;
+          this.snake.body.unshift(next);
+
+          // Check if apple is eaten
+          if (next === this.apple.triangle) {
+            this.snake.length += 2;
+            this.snake.speed = Math.max(200, this.snake.speed * 0.95); // Don't go too fast
+            this.spawnApple();
+          }
+          
+          // Maintain length
+          while (this.snake.body.length > this.snake.length) {
+            this.snake.body.pop();
+          }
+          
+          // Slight color shift
+          this.snake.hue = (this.snake.hue + 1) % 360;
+        } else {
+          // Increment stuck counter
+          this.snake.stuckCounter++;
+          
+          // Respawn if stuck for too long or completely stuck
+          if (this.snake.stuckCounter >= 5) {
+            console.log("Snake stuck - Respawning...");
+            this.startSnake();
+            return;
+          }
+        }
+        
+        // Schedule next move
+        setTimeout(() => this.moveSnake(), this.snake.speed);
+      },
+
+      /**
+       * Picks the next triangle for the snake's head using the priority:
+       *  1) user direction (if directionHint is set), 
+       *  2) continue last valid direction (if available),
+       *  3) apple seeking (closest neighbor to apple),
+       *  4) random neighbor,
+       *  5) return null if no neighbors
+       */
+      pickNextTriangle(current) {
+        let next = null;
+
+        // 1) Try user's direction hint first
+        if (this.snake.directionHint) {
+          next = this.selectNeighborInDirection(current, this.snake.directionHint);
+          if (next && !this.snake.body.includes(next)) {
+            this.snake.lastValidDirection = this.snake.directionHint;
+            return next;
+          }
+        }
+
+        // 2) Try last valid direction
+        if (this.snake.lastValidDirection) {
+          next = this.selectNeighborInDirection(current, this.snake.lastValidDirection);
+          if (next && !this.snake.body.includes(next)) {
+            return next;
+          }
+          // Clear last direction if it failed
+          this.snake.lastValidDirection = null;
+        }
+
+        // 3) Try apple-seeking behavior (only if no user input)
+        if (!this.snake.directionHint) {
+          next = this.selectNeighborAppleSeeker(current);
+          if (next && !this.snake.body.includes(next)) {
+            return next;
+          }
+        }
+
+        // 4) Random direction as last resort
+        next = this.selectRandomNeighbor(current);
+
+        return next; // Will be null if no valid moves
+      },
+
+      /**
+       * Pick from neighbors the one closest to the apple centroid 
+       * (excluding any triangle already in the snake body).
+       */
+      selectNeighborAppleSeeker(current) {
+        if (!this.apple.triangle) return null;
+        
+        const currentC = this.centroidCanvas(current.canvasPoints);
+        const appleC = this.centroidCanvas(this.apple.triangle.canvasPoints);
+        let chosen = null;
+        let bestDist = Infinity;
+
+        // Filter valid neighbors first
+        const validNeighbors = current.edgeNeighbors.filter(nb => !this.snake.body.includes(nb));
+        
+        for (const nb of validNeighbors) {
+          const nbC = this.centroidCanvas(nb.canvasPoints);
+          // Calculate distance to apple from this neighbor
+          const dist = Math.hypot(nbC.x - appleC.x, nbC.y - appleC.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            chosen = nb;
+          }
+        }
+        
+        return chosen;
+      },
+
+      /**
+       * Select from current.edgeNeighbors the one that is "most in the direction" 
+       * (up/down/left/right) relative to the canvas. Excludes any triangle already in snake body.
+       */
+      selectNeighborInDirection(current, direction) {
+        const currentC = this.centroidCanvas(current.canvasPoints);
+        let chosen = null;
+        let bestDist = Infinity;
+
+        for (const nb of current.edgeNeighbors) {
+          // Exclude body
+          if (this.snake.body.includes(nb)) continue;
+          const nbC = this.centroidCanvas(nb.canvasPoints);
+          const dx = nbC.x - currentC.x;
+          const dy = nbC.y - currentC.y;
+
+          switch(direction) {
+            case 'up':
+              if (dy < 0) {
+                const dist = Math.hypot(dx, dy);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  chosen = nb;
+                }
+              }
+              break;
+            case 'down':
+              if (dy > 0) {
+                const dist = Math.hypot(dx, dy);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  chosen = nb;
+                }
+              }
+              break;
+            case 'left':
+              if (dx < 0) {
+                const dist = Math.hypot(dx, dy);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  chosen = nb;
+                }
+              }
+              break;
+            case 'right':
+              if (dx > 0) {
+                const dist = Math.hypot(dx, dy);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  chosen = nb;
+                }
+              }
+              break;
+          }
+        }
+        return chosen;
+      },
+
+      /**
+       * Pick a random neighbor that is not in the snake body.
+       */
+      selectRandomNeighbor(current) {
+        const candidates = current.edgeNeighbors.filter(nb => !this.snake.body.includes(nb));
+        if (!candidates.length) return null;
+        return candidates[Math.floor(Math.random() * candidates.length)];
+      },
+
+      /**
+       * Get the centroid of a triangle in canvas space (where the snake directions apply).
+       */
+      centroidCanvas(pts) {
+        let sx = 0, sy = 0;
+        for (const p of pts) {
+          sx += p.x;
+          sy += p.y;
+        }
+        return { x: sx / pts.length, y: sy / pts.length };
+      },
+
+      /**
+       * Keyboard handling for arrow keys/WASD.
+       */
+      setupKeyboardControls() {
+        window.addEventListener('keydown', (evt) => {
+          const code = evt.code;
+          if (['ArrowUp', 'KeyW'].includes(code)) {
+            this.snake.directionHint = 'up';
+          } else if (['ArrowDown', 'KeyS'].includes(code)) {
+            this.snake.directionHint = 'down';
+          } else if (['ArrowLeft', 'KeyA'].includes(code)) {
+            this.snake.directionHint = 'left';
+          } else if (['ArrowRight', 'KeyD'].includes(code)) {
+            this.snake.directionHint = 'right';
+          }
+        });
+
+        window.addEventListener('keydown', (e) => {
+          if (e.metaKey && e.key === 'd') {
+            e.preventDefault();
+            const controls = document.getElementById('controlsContainer');
+            controls.style.display = (controls.style.display === 'none') ? 'grid' : 'none';
+          }
+        });
+      },
+
+      /**
+       * Touch handling for swipes, using Hammer.js
+       */
+      setupTouchControls() {
+        const hammer = new Hammer(this.canvas);
+        hammer.get('swipe').set({ direction: Hammer.DIRECTION_ALL });
+
+        hammer.on('swipeup', () => {
+          this.snake.directionHint = 'up';
+        });
+        hammer.on('swipedown', () => {
+          this.snake.directionHint = 'down';
+        });
+        hammer.on('swipeleft', () => {
+          this.snake.directionHint = 'left';
+        });
+        hammer.on('swiperight', () => {
+          this.snake.directionHint = 'right';
+        });
+      }
+    };
+
+    // Automatically start the entire process once the DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      PentagonGridClockwise.init();
+    });
+  </script>
+</body>
+</html>
