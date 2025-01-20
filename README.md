@@ -8,3 +8,4 @@ Pentasnake is a browser-based variation of the classic Snake game played on a pe
 ## License
 
 This project is licensed under the MIT License.
+    
